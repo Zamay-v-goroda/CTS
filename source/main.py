@@ -139,15 +139,21 @@ def main():
     initial_delays, initial_skew = calculator.calculate(root_node)
     print(f"-> Исходный разброс задержек (Initial Skew): {initial_skew:.4f} нс")
     
-    # 4. Постоптимизация (Wire Snaking)
+    # 4. Постоптимизация (Wire Snaking). Запускается только если целевой skew не достигнут:
+    #    если min_skew входит в цели и skew уже меньше целевого, оптимизация не требуется.
+    skew_is_goal = "min_skew" in (opt_params["objective"], opt_params["secondary_objective"])
     print(f"[4/6] Оптимизация дерева (цель: {opt_params['objective']}"
           f"{', ' + opt_params['secondary_objective'] if opt_params['secondary_objective'] else ''})...")
     optimizer = CTSOptimizer(wire_model, opt_params, tree_params,
                              candidate_buffers=cts_engine.eligible_buffers)
     final_delays, final_skew = optimizer.optimize(root_node)
-    print(f"-> Финальный разброс задержек (Final Skew): {final_skew:.4f} нс")
-    print(f"-> Итераций: {optimizer.iterations}, заменено буферов: {optimizer.buffers_resized}, "
-          f"удлинено проводов: {optimizer.edges_snaked}")
+    if optimizer.target_met_before_opt:
+        print(f"-> Skew {final_skew:.4f} нс уже меньше целевого ({opt_params['skew_target']} нс) — "
+              f"оптимизация не запускалась.")
+    else:
+        print(f"-> Финальный разброс задержек (Final Skew): {final_skew:.4f} нс")
+        print(f"-> Итераций: {optimizer.iterations}, заменено буферов: {optimizer.buffers_resized}, "
+              f"удлинено проводов: {optimizer.edges_snaked}")
     
     # 5. Верификация результатов (Валидатор дерева)
     print("[5/6] Верификация физических и временных ограничений...")
@@ -193,7 +199,6 @@ def main():
         print(f"-> [Предупреждение] Не удалось построить график: {e}")
             
     # Целевой разброс не достигнут: предупреждение
-    skew_is_goal = "min_skew" in (opt_params["objective"], opt_params["secondary_objective"])
     skew_target_met = (not skew_is_goal) or (final_skew <= opt_params["skew_target"] + 1e-12)
     if skew_is_goal and not skew_target_met:
         msg = (f"Целевой разброс задержек не достигнут: Skew = {final_skew:.4f} нс > "

@@ -80,6 +80,8 @@ class CTSOptimizer:
         self.iterations = 0
         self.buffers_resized = 0
         self.edges_snaked = 0
+        # True, если целевой skew уже был достигнут и оптимизация не запускалась
+        self.target_met_before_opt = False
 
     # ------------------------------------------------------------ metrics/cost
     def _evaluate(self, root: ClockNode) -> Dict[str, float]:
@@ -124,12 +126,22 @@ class CTSOptimizer:
 
     # ---------------------------------------------------------------- optimize
     def optimize(self, root: ClockNode) -> Tuple[Dict[str, float], float]:
-        """Возвращает (задержки sink'ов, итоговый skew)."""
+        """
+        Возвращает (задержки sink'ов, итоговый skew).
+
+        Оптимизация запускается, только если целевой skew не достигнут: когда min_skew
+        входит в цели и skew уже не больше skew_target, итерации не выполняются.
+        """
         m = self._evaluate(root)
         self.initial = dict(m)
         self.final = dict(m)
         if not self.last_delays:
             return self.last_delays, 0.0
+
+        # Целевой skew уже достигнут — оптимизация не требуется.
+        if self.skew_is_goal and m["skew"] <= self.skew_target:
+            self.target_met_before_opt = True
+            return self.last_delays, m["skew"]
 
         self._collect_nodes(root)
         self._ref_d = m["skew"] if (self.delay_metric == "min_skew" and m["skew"] > _EPS) else (
