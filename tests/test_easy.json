@@ -2,7 +2,8 @@
   "design": {
     "chip_width": 2000,
     "chip_height": 2000,
-    "grid_size": 10
+    "grid_size": 10,
+    "snap_terminals_to_grid": true
   },
   "clock_source": {
     "id": "CLK_SRC",
@@ -15,62 +16,62 @@
   "sinks": [
     {
       "id": "S1",
-      "x": 662.0,
-      "y": 1852.0,
+      "x": 1420.0,
+      "y": 300.0,
       "pin_id": "S1_PIN",
-      "capacitance": 3.3,
+      "capacitance": 4.5,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S2",
-      "x": 833.0,
-      "y": 601.0,
+      "x": 490.0,
+      "y": 970.0,
       "pin_id": "S2_PIN",
-      "capacitance": 5.5,
+      "capacitance": 3.8,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S3",
-      "x": 1953.0,
-      "y": 1156.0,
+      "x": 230.0,
+      "y": 1570.0,
       "pin_id": "S3_PIN",
-      "capacitance": 2.3,
+      "capacitance": 4.2,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S4",
-      "x": 1708.0,
-      "y": 526.0,
+      "x": 1810.0,
+      "y": 360.0,
       "pin_id": "S4_PIN",
-      "capacitance": 4.3,
+      "capacitance": 5.0,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S5",
-      "x": 1055.0,
-      "y": 85.0,
+      "x": 900.0,
+      "y": 850.0,
       "pin_id": "S5_PIN",
-      "capacitance": 3.2,
+      "capacitance": 4.2,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S6",
-      "x": 744.0,
-      "y": 1195.0,
+      "x": 940.0,
+      "y": 360.0,
       "pin_id": "S6_PIN",
-      "capacitance": 2.3,
+      "capacitance": 4.3,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S7",
-      "x": 1775.0,
-      "y": 1378.0,
+      "x": 880.0,
+      "y": 370.0,
       "pin_id": "S7_PIN",
       "capacitance": 5.0,
       "required_arrival_time": 2.5,
@@ -78,28 +79,28 @@
     },
     {
       "id": "S8",
-      "x": 1350.0,
-      "y": 1222.0,
+      "x": 1970.0,
+      "y": 1470.0,
       "pin_id": "S8_PIN",
-      "capacitance": 3.0,
+      "capacitance": 4.1,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S9",
-      "x": 1107.0,
-      "y": 1853.0,
+      "x": 1980.0,
+      "y": 1450.0,
       "pin_id": "S9_PIN",
-      "capacitance": 3.2,
+      "capacitance": 2.8,
       "required_arrival_time": 2.5,
       "fixed": true
     },
     {
       "id": "S10",
-      "x": 678.0,
-      "y": 883.0,
+      "x": 1900.0,
+      "y": 110.0,
       "pin_id": "S10_PIN",
-      "capacitance": 2.5,
+      "capacitance": 4.1,
       "required_arrival_time": 2.5,
       "fixed": true
     }
@@ -141,16 +142,16 @@
   },
   "tree_params": {
     "algorithm": "median_partition",
-    "max_fanout": 2,
-    "min_sinks_for_partition": 2,
+    "max_fanout": 3,
+    "min_sinks_for_partition": 3,
     "max_depth": 6,
-    "partition_criterion": "balanced_count",
-    "partition_axis": "y",
-    "median_type": "geometric_median",
+    "partition_criterion": "balanced_capacitance",
+    "partition_axis": "alternate",
+    "median_type": "manhattan_median",
     "buffer_insertion": true,
-    "buffer_selection": "uniform",
-    "min_buffer_input_cap": 1.0,
-    "snaking_allowed": false,
+    "buffer_selection": "min_delay",
+    "min_buffer_input_cap": 0.0,
+    "snaking_allowed": true,
     "wire_snaking_limit": 0.3,
     "obstacle_aware": false
   },
@@ -158,9 +159,9 @@
     "objective": "min_delay",
     "secondary_objective": "min_power",
     "max_iterations": 10,
-    "convergence_tol": 0.001,
+    "convergence_tol": 1e-05,
     "skew_target": 0.05,
-    "power_weight": 0.38,
-    "delay_weight": 0.62
+    "power_weight": 0.18,
+    "delay_weight": 0.82
   }
 }

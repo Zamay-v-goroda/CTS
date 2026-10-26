@@ -1,7 +1,6 @@
 import os
 import subprocess
 import time
-import shutil
 import argparse
 
 def run_team_pipeline():
@@ -35,11 +34,8 @@ def run_team_pipeline():
         print(f"[Ошибка] Не найдено .json конфигураций в папке {tests_dir}!")
         return
 
-    # ОЧИСТКА ВСЕЙ ПАПКИ ПРОИСХОДИТ СТРОГО 1 РАЗ ПЕРЕД СТАРТОМ ВСЕГО ПАЙПЛАЙНА
-    if os.path.exists(results_dir):
-        print(f"[ОЧИСТКА] Удаление старых результатов из папки {results_dir}...")
-        shutil.rmtree(results_dir)
-    
+    # Папка результатов НЕ очищается: каждый прогон сохраняется в своей подпапке
+    # (results/run_<timestamp>_<case>), чтобы можно было сравнивать запуски.
     os.makedirs(results_dir, exist_ok=True)
 
     print("\n[ЗАПУСК] Прогон конфигураций через компилятор...")
@@ -71,7 +67,8 @@ def run_team_pipeline():
             print(result.stderr)
 
     print("\n" + "=" * 60)
-    print(f"Тестирование завершено! Проверьте папку /{results_dir}")
+    print(f"Тестирование завершено! Результаты прогонов: /{results_dir}/run_<время>_<case>/")
+    print(f"Ссылка на последний прогон: /{results_dir}/latest")
     print("=" * 60)
 
 if __name__ == "__main__":

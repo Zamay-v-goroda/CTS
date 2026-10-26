@@ -80,21 +80,23 @@ class CTSTestGenerator:
 
     def generate_case(self, filename: str, num_sinks: int, chip_size: int = 2000, grid_size: int = 10,
                       vary_params: bool = True):
-        """Создает и сохраняет один тестовый JSON файл со свободными случайными координатами.
+        """Создает и сохраняет один тестовый JSON файл; координаты терминалов кратны шагу сетки.
         vary_params=True — tree_params и optimization случайные; False — фиксированные значения из ТЗ."""
         
         # Задаем параметры кристалла
         design = {
             "chip_width": chip_size,
             "chip_height": chip_size,
-            "grid_size": grid_size
+            "grid_size": grid_size,
+            # Координаты терминалов всегда кратны сетке (см. ТЗ)
+            "snap_terminals_to_grid": True
         }
-        
-        # Источник тактовой частоты по центру верхней границы кристалла (без выравнивания по сетке)
+
+        # Источник тактовой частоты по центру верхней границы кристалла (кратно сетке)
         clock_source = {
             "id": "CLK_SRC",
-            "x": float(chip_size // 2),
-            "y": float(chip_size),
+            "x": float((chip_size // 2) // grid_size * grid_size),
+            "y": float(chip_size // grid_size * grid_size),
             "pin_id": "CLK_PIN",
             "input_capacitance": 0.0,
             "fixed": True
@@ -119,12 +121,13 @@ class CTSTestGenerator:
         tree_params = self.random_tree_params(num_sinks) if vary_params else fixed_tree_params
         optimization = self.random_optimization() if vary_params else self.optimization
         
-        # Генерация случайных потребителей (Sinks) без привязки к границам и сетке
+        # Генерация случайных потребителей (Sinks); координаты кратны шагу сетки
         sinks = []
+        steps = chip_size // grid_size
         for i in range(1, num_sinks + 1):
-            # Координаты могут принимать любые абсолютно случайные значения
-            x_coord = random.randint(0, chip_size)
-            y_coord = random.randint(0, chip_size)
+            # Любой узел сетки внутри кристалла
+            x_coord = random.randint(0, steps) * grid_size
+            y_coord = random.randint(0, steps) * grid_size
             
             # Случайная емкость затвора триггера от 2.0 до 6.0 фФ
             cap = round(random.uniform(2.0, 6.0), 1)
