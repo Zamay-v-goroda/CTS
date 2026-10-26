@@ -23,6 +23,13 @@ ALLOWED_TREE = {
 MEDIAN_ALIASES = {"geometric_center": "bbox_center"}
 OBJECTIVES = ("min_skew", "min_delay", "min_power")
 
+DESIGN_KEYS = ("chip_width", "chip_height", "grid_size", "snap_terminals_to_grid")
+
+DESIGN_DEFAULTS: Dict[str, Any] = {
+    # Округлять координаты терминалов до узлов сетки (по ТЗ узлы кратны grid_size).
+    "snap_terminals_to_grid": True,
+}
+
 TREE_DEFAULTS: Dict[str, Any] = {
     "algorithm": "median_partition",
     "max_fanout": 4,
@@ -61,6 +68,7 @@ class CTSParser:
         self.grid_size = 1.0
         self.chip_width = 0.0
         self.chip_height = 0.0
+        self.snap_terminals = True
 
         self.clock_source: ClockSource = None
         self.sinks: List[Sink] = []
@@ -133,28 +141,47 @@ class CTSParser:
             if section not in data:
                 raise ValueError(f"Во входном файле нет обязательной секции '{section}'.")
 
+        self.warnings = []
+
         # 1. design
         design = data.get("design", {})
+        for key in design:
+            if key not in DESIGN_KEYS:
+                self.warnings.append(f"design.{key}: неизвестный параметр, игнорируется.")
         self.grid_size = self._number("design", design, "grid_size", 1.0, minimum=0, strict_min=True)
         self.chip_width = self._number("design", design, "chip_width", 2000.0, minimum=0, strict_min=True)
         self.chip_height = self._number("design", design, "chip_height", 2000.0, minimum=0, strict_min=True)
+        # Округлять ли координаты терминалов (sink/источник) до узлов сетки.
+        # По ТЗ координаты узлов кратны grid_size; терминалы fixed, но при включённом
+        # флаге они привязываются к сетке, и каждый сдвиг попадает в журнал.
+        self.snap_terminals = self._flag("design", design, "snap_terminals_to_grid",
+                                         DESIGN_DEFAULTS["snap_terminals_to_grid"])
 
-        # 2. clock_source (фиксирован: координаты НЕ сдвигаются)
+        # 2. clock_source (фиксирован: координаты сдвигаются только для привязки к сетке)
         src = data["clock_source"]
         for key in ("id", "x", "y", "pin_id"):
             if key not in src:
                 raise ValueError(f"clock_source.{key}: обязательный параметр отсутствует.")
+        if src.get("fixed", True) is not True:
+            self.warnings.append(
+                "clock_source.fixed=false заменено на true: по ТЗ источник такта не перемещается."
+            )
+        src_x = self._number("clock_source", src, "x")
+        src_y = self._number("clock_source", src, "y")
+        if self.snap_terminals:
+            src_x = self._snap_terminal("clock_source", str(src["id"]), "x", src_x)
+            src_y = self._snap_terminal("clock_source", str(src["id"]), "y", src_y)
         self.clock_source = ClockSource(
             id=str(src["id"]),
-            x=self._number("clock_source", src, "x"),
-            y=self._number("clock_source", src, "y"),
+            x=src_x,
+            y=src_y,
             pin_id=str(src["pin_id"]),
             input_capacitance=self._number("clock_source", src, "input_capacitance", 0.0, minimum=0),
             fixed=True,  # по заданию источник всегда fixed
         )
         self.validate_bounds(self.clock_source.x, self.clock_source.y, self.clock_source.id)
 
-        # 3. sinks (фиксированы: координаты НЕ сдвигаются)
+        # 3. sinks (фиксированы: координаты сдвигаются только для привязки к сетке)
         seen_ids = {self.clock_source.id}
         self.sinks = []
         for i, sd in enumerate(data["sinks"]):
@@ -165,10 +192,19 @@ class CTSParser:
             if sid in seen_ids:
                 raise ValueError(f"Повторяющийся идентификатор '{sid}' (sinks[{i}]).")
             seen_ids.add(sid)
+            if sd.get("fixed", True) is not True:
+                self.warnings.append(
+                    f"sink {sid!r}: fixed=false заменено на true: по ТЗ sink'и не перемещаются."
+                )
+            sk_x = self._number(f"sinks[{i}]", sd, "x")
+            sk_y = self._number(f"sinks[{i}]", sd, "y")
+            if self.snap_terminals:
+                sk_x = self._snap_terminal(f"sink", sid, "x", sk_x)
+                sk_y = self._snap_terminal(f"sink", sid, "y", sk_y)
             sink = Sink(
                 id=sid,
-                x=self._number(f"sinks[{i}]", sd, "x"),
-                y=self._number(f"sinks[{i}]", sd, "y"),
+                x=sk_x,
+                y=sk_y,
                 pin_id=str(sd["pin_id"]),
                 capacitance=self._number(f"sinks[{i}]", sd, "capacitance", minimum=0),
                 required_arrival_time=self._number(f"sinks[{i}]", sd, "required_arrival_time", minimum=0),
@@ -188,7 +224,8 @@ class CTSParser:
                     raise ValueError(f"buffers[{i}].{key}: обязательный параметр отсутствует.")
             buf = BufferType(
                 id=str(bd["id"]),
-                type=str(bd["type"]),
+                # По ТЗ type — категория буфера: standard / mid / large.
+                type=self._choice(f"buffers[{i}]", bd, "type", "", ("standard", "mid", "large")),
                 input_capacitance=self._number(f"buffers[{i}]", bd, "input_capacitance", minimum=0),
                 output_resistance=self._number(f"buffers[{i}]", bd, "output_resistance", minimum=0),
                 intrinsic_delay=self._number(f"buffers[{i}]", bd, "intrinsic_delay", minimum=0),
@@ -209,7 +246,6 @@ class CTSParser:
         )
 
         # 6. tree_params и optimization
-        self.warnings = []
         self.tree_params = self._normalize_tree_params(data.get("tree_params", {}))
         self.optimization_params = self._normalize_opt_params(data.get("optimization", {}))
 
@@ -316,3 +352,17 @@ class CTSParser:
                 f"Элемент '{entity_id}' находится вне границ кристалла! "
                 f"Координаты: ({x}, {y}), Размер кристалла: {self.chip_width}x{self.chip_height}"
             )
+
+    def _snap_terminal(self, what: str, entity_id: str, axis: str, value: float) -> float:
+        """Округляет координату терминала к ближайшему узлу сетки и логирует сдвиг."""
+        g = self.grid_size
+        if g <= 0:
+            return value
+        limit = self.chip_width if axis == "x" else self.chip_height
+        snapped = min(max(round(value / g) * g, 0.0), limit)
+        if abs(snapped - value) > 1e-9:
+            self.warnings.append(
+                f"{what} {entity_id!r}: координата {axis}={value} не кратна сетке ({g}), "
+                f"округлена до {snapped}."
+            )
+        return float(snapped)

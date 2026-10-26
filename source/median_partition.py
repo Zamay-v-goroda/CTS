@@ -69,6 +69,11 @@ class MedianPartitionCTS:
         if self.buffer_insertion and not self.eligible_buffers:
             raise ValueError("Нет доступных буферов, удовлетворяющих min_buffer_input_cap.")
 
+        # Координаты терминалов (источник + sink'и): буфер/точка ветвления не может
+        # лечь ровно на терминал (наложение буфера и регистра).
+        self._terminals = {(round(self.clock_source.x, 6), round(self.clock_source.y, 6))}
+        self._terminals.update((round(s.x, 6), round(s.y, 6)) for s in sinks)
+
         self.node_counter = 0
 
     # ------------------------------------------------------------------ build
@@ -259,7 +264,7 @@ class MedianPartitionCTS:
         return x, y
 
     def _snap(self, x: float, y: float) -> Tuple[float, float]:
-        """Привязка к сетке и ограничение габаритами кристалла."""
+        """Привязка к сетке, ограничение габаритами кристалла и уход с координат терминалов."""
         g = self.grid_size
         if g > 0:
             x = round(x / g) * g
@@ -272,7 +277,36 @@ class MedianPartitionCTS:
             x = min(max(x, 0.0), max_x)
         if max_y is not None:
             y = min(max(y, 0.0), max_y)
+        x, y = self._avoid_terminals(float(x), float(y))
         return float(x), float(y)
+
+    def _avoid_terminals(self, x: float, y: float) -> Tuple[float, float]:
+        """Сдвигает узел на ближайший свободный узел сетки, если он попал на терминал."""
+        g = self.grid_size
+        if g <= 0 or (round(x, 6), round(y, 6)) not in self._terminals:
+            return x, y
+        max_x = math.floor(self.chip_width / g) * g if self.chip_width is not None else None
+        max_y = math.floor(self.chip_height / g) * g if self.chip_height is not None else None
+        for r in range(1, 33):
+            best = None
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    if max(abs(dx), abs(dy)) != r:
+                        continue
+                    nx, ny = x + dx * g, y + dy * g
+                    if nx < -1e-9 or ny < -1e-9:
+                        continue
+                    if max_x is not None and nx > max_x + 1e-9:
+                        continue
+                    if max_y is not None and ny > max_y + 1e-9:
+                        continue
+                    if (round(nx, 6), round(ny, 6)) in self._terminals:
+                        continue
+                    if best is None or abs(dx) + abs(dy) < best[0]:
+                        best = (abs(dx) + abs(dy), nx, ny)
+            if best is not None:
+                return float(best[1]), float(best[2])
+        return x, y
 
     # ----------------------------------------------------------------- buffers
     def _assign_buffers(self, root: ClockNode):

@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import argparse
@@ -32,6 +33,38 @@ class RunLog:
 def print_divider():
     print("-" * 60)
 
+
+def sanitize_name(name: str) -> str:
+    """Оставляет в имени только безопасные символы (защита от path traversal)."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name or "")
+
+
+def make_run_dir(output_dir: str, name: str) -> str:
+    """Создаёт отдельную папку прогона (как run-директория в инструментах синтеза):
+    results/run_<ГГГГММДД-ЧЧММСС>_<name>/ — каждый запуск сохраняется, ничего не затирается."""
+    os.makedirs(output_dir, exist_ok=True)
+    name = sanitize_name(name)
+    base = f"run_{time.strftime('%Y%m%d-%H%M%S')}" + (f"_{name}" if name else "")
+    run_dir = os.path.join(output_dir, base)
+    suffix = 1
+    while os.path.exists(run_dir):
+        suffix += 1
+        run_dir = os.path.join(output_dir, f"{base}_{suffix}")
+    os.makedirs(run_dir, exist_ok=True)
+    return run_dir
+
+
+def update_latest_link(output_dir: str, run_dir: str) -> None:
+    """Обновляет символьную ссылку output_dir/latest -> последний прогон."""
+    link = os.path.join(output_dir, "latest")
+    try:
+        if os.path.islink(link) or os.path.exists(link):
+            os.remove(link)
+        os.symlink(os.path.basename(run_dir), link)
+    except OSError:
+        pass  # отсутствие поддержки симлинков не должно ломать прогон
+
+
 def main():
     arg_parser = argparse.ArgumentParser(description="CTS Compiler Tool")
     arg_parser.add_argument("--input", type=str, default=os.path.join("data", "input.json"), 
@@ -43,15 +76,16 @@ def main():
     
     args = arg_parser.parse_args()
     input_file = args.input
-    
-    # ИСПРАВЛЕНО: Форматируем имена строго под маску clock_tree_test_easy.png и output_test_easy.txt
-    prefix = f"_{args.name}" if args.name else ""
-    output_file = os.path.join(args.output_dir, f"output{prefix}.txt")
-    image_file = os.path.join(args.output_dir, f"clock_tree{prefix}.png")
-    
-    os.makedirs(args.output_dir, exist_ok=True)
-    log = RunLog(os.path.join(args.output_dir, f"errors{prefix}.log"))
-    
+    safe_name = sanitize_name(args.name)
+
+    # Каждый запуск пишется в свою папку прогона: результаты не перезаписываются.
+    prefix = f"_{safe_name}" if safe_name else ""
+    run_dir = make_run_dir(args.output_dir, safe_name)
+    output_file = os.path.join(run_dir, f"output{prefix}.txt")
+    image_file = os.path.join(run_dir, f"clock_tree{prefix}.png")
+    log = RunLog(os.path.join(run_dir, f"errors{prefix}.log"))
+    update_latest_link(args.output_dir, run_dir)
+    print(f"-> Папка прогона: {run_dir}")
     if not os.path.exists(input_file):
         print(f"[Ошибка] Пожалуйста, положите входной JSON-файл по пути: {input_file}")
         log.add("ОШИБКА", f"Входной файл не найден: {input_file}")
@@ -153,20 +187,18 @@ def main():
         print_divider()
         log.finish(1)  # Завершаем работу с ошибкой после отрисовки графика
 
-    # Целевой разброс не достигнут: предупреждение, отчет не записывается.
+    # Целевой разброс не достигнут: это предупреждение, а не блокировка отчёта.
     # Проверка применяется, если skew входит в цели оптимизации.
     skew_is_goal = "min_skew" in (opt_params["objective"], opt_params["secondary_objective"])
-    if skew_is_goal and final_skew > opt_params["skew_target"] + 1e-12:
+    skew_target_met = (not skew_is_goal) or (final_skew <= opt_params["skew_target"] + 1e-12)
+    if skew_is_goal and not skew_target_met:
+        msg = (f"Целевой разброс задержек не достигнут: Skew = {final_skew:.4f} нс > "
+               f"Skew Target = {opt_params['skew_target']} нс (итераций: {optimizer.iterations}).")
         print_divider()
-        print(f"-> [ПРЕДУПРЕЖДЕНИЕ] Целевой разброс задержек не достигнут: "
-              f"Skew = {final_skew:.4f} нс > Skew Target = {opt_params['skew_target']} нс "
-              f"(итераций: {optimizer.iterations}).")
-        print("[БЛОКИРОВКА] Текстовый отчет не записан. График топологии сохранен для анализа.")
+        print(f"-> [ПРЕДУПРЕЖДЕНИЕ] {msg}")
+        print("-> Отчёт будет сохранён со статусом оптимизации «целевой skew не достигнут».")
         print_divider()
-        log.add("ПРЕДУПРЕЖДЕНИЕ",
-                f"Целевой разброс не достигнут: Skew = {final_skew:.4f} нс > Skew Target = "
-                f"{opt_params['skew_target']} нс (итераций: {optimizer.iterations}). Отчет не записан.")
-        log.finish(2)
+        log.add("ПРЕДУПРЕЖДЕНИЕ", msg)
 
     # Запись текстового отчета (Выполняется ТОЛЬКО если дерево полностью валидно)
     print_divider()
@@ -174,7 +206,12 @@ def main():
     
     with open(output_file, "w", encoding="utf-8") as out:
         out.write("=== РЕЗУЛЬТАТЫ СИНТЕЗА ЦЕПЕЙ СИНХРОНИЗАЦИИ (CTS) ===\n")
-        out.write("Статус валидации: УСПЕШНО\n")
+        out.write(f"Папка прогона: {run_dir}\n")
+        out.write(f"Статус валидации: УСПЕШНО\n")
+        out.write(f"Статус оптимизации: {'ЦЕЛЬ ДОСТИГНУТА' if skew_target_met else 'ЦЕЛЕВОЙ SKEW НЕ ДОСТИГНУТ'}\n")
+        timing_bad = [s.id for s in sinks if final_delays.get(s.id, 0.0) > s.required_arrival_time + 1e-12]
+        out.write(f"Timing compliance: "
+                  f"{'OK' if not timing_bad else 'нарушено у ' + str(len(timing_bad)) + ' терминал(ов)'}\n")
         out.write(f"Время работы алгоритма (без построения графика): {execution_time:.4f} сек.\n")
         out.write(f"Максимальная задержка: {max(final_delays.values()):.4f} нс\n")
         out.write(f"Минимальная задержка: {min(final_delays.values()):.4f} нс\n")

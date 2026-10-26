@@ -33,11 +33,13 @@ class CTSValidator:
 
         self.errors: List[str] = []
         self.warnings: List[str] = []
+        self._nodes: List[ClockNode] = []
 
     def validate(self, root: ClockNode, expected_sinks_count: int,
                  sink_delays: Dict[str, float]) -> Tuple[bool, List[str], List[str]]:
         self.errors.clear()
         self.warnings.clear()
+        self._nodes = []
 
         if not root:
             self.errors.append("Дерево синхронизации пустое (отсутствует корень).")
@@ -48,6 +50,8 @@ class CTSValidator:
         edges = [0]
 
         self._traverse_and_verify(root, visited_nodes, connected_sinks, edges, current_depth=1)
+        self._check_overlaps()
+        self._check_terminal_grid()
 
         if len(connected_sinks) != expected_sinks_count:
             self.errors.append(
@@ -80,6 +84,7 @@ class CTSValidator:
             self.errors.append(f"Обнаружен цикл в дереве! Узел '{node.id}' посещен повторно.")
             return
         visited.add(node.id)
+        self._nodes.append(node)
 
         # 1. Границы кристалла
         if not (0 <= node.x <= self.chip_width) or not (0 <= node.y <= self.chip_height):
@@ -137,3 +142,50 @@ class CTSValidator:
             if child.parent is not node:
                 self.errors.append(f"Нарушена иерархическая структура! Узел '{child.id}' указывает на неверного родителя.")
             self._traverse_and_verify(child, visited, connected_sinks, edges, current_depth + 1)
+
+    def _check_overlaps(self):
+        """
+        Наложение узлов: буфер/точка ветвления не может занимать ту же координату,
+        что терминал (регистр или источник) — это физически недопустимо.
+        Совпадения буферов между собой и терминалов между собой — предупреждения.
+        """
+        by_pos: Dict[Tuple[float, float], List[ClockNode]] = {}
+        for n in self._nodes:
+            by_pos.setdefault((round(n.x, 6), round(n.y, 6)), []).append(n)
+
+        for (x, y), nodes in by_pos.items():
+            if len(nodes) < 2:
+                continue
+            cell_nodes = [n for n in nodes if n.node_type in ("buffer", "branch")]
+            sink_nodes = [n for n in nodes if n.node_type == "sink"]
+            source_nodes = [n for n in nodes if n.node_type == "source"]
+
+            if cell_nodes and (sink_nodes or source_nodes):
+                self.errors.append(
+                    f"Наложение буфера и терминала в точке ({x}, {y}): "
+                    + ", ".join(f"{n.id} ({n.node_type})" for n in nodes) + "."
+                )
+            if len(cell_nodes) > 1:
+                self.warnings.append(
+                    f"Совпадение координат буферов/точек ветвления в точке ({x}, {y}): "
+                    + ", ".join(n.id for n in cell_nodes) + "."
+                )
+            if len(sink_nodes) > 1:
+                self.warnings.append(
+                    f"Терминалы совпадают по координатам в точке ({x}, {y}): "
+                    + ", ".join(n.id for n in sink_nodes) + "."
+                )
+
+    def _check_terminal_grid(self):
+        """Координаты терминалов (источник, sink'и) должны быть кратны шагу сетки."""
+        if self.grid_size <= 0:
+            return
+        for n in self._nodes:
+            if n.node_type not in ("source", "sink"):
+                continue
+            if not (self._on_grid(n.x) and self._on_grid(n.y)):
+                self.warnings.append(
+                    f"Терминал '{n.id}' ({n.node_type}) не кратен сетке: "
+                    f"({n.x}, {n.y}), шаг сетки {self.grid_size}. "
+                    f"Включите design.snap_terminals_to_grid для привязки к сетке."
+                )
