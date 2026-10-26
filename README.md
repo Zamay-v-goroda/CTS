@@ -95,6 +95,8 @@ python test_generator.py
 # напрямую, без пакетного раннера
 python source/main.py --input tests/test_easy.json --output_dir results --name test_easy
 ```
+<img width="1280" height="820" alt="Запись экрана_20261026_195743" src="https://github.com/user-attachments/assets/f98f8462-660b-4628-bc0d-fc6bc9daf21e" />
+
 
 После успешного прогона смотрите `results/latest/output_test_easy.txt` и `results/latest/clock_tree_test_easy.png`.
 
