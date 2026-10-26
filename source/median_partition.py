@@ -73,6 +73,8 @@ class MedianPartitionCTS:
         # лечь ровно на терминал (наложение буфера и регистра).
         self._terminals = {(round(self.clock_source.x, 6), round(self.clock_source.y, 6))}
         self._terminals.update((round(s.x, 6), round(s.y, 6)) for s in sinks)
+        # Занятые координаты: терминалы + уже размещённые узлы (буферы/точки ветвления).
+        self._occupied = set(self._terminals)
 
         self.node_counter = 0
 
@@ -277,18 +279,29 @@ class MedianPartitionCTS:
             x = min(max(x, 0.0), max_x)
         if max_y is not None:
             y = min(max(y, 0.0), max_y)
-        x, y = self._avoid_terminals(float(x), float(y))
+        x, y = self._avoid_occupied(float(x), float(y))
         return float(x), float(y)
 
-    def _avoid_terminals(self, x: float, y: float) -> Tuple[float, float]:
-        """Сдвигает узел на ближайший свободный узел сетки, если он попал на терминал."""
+    def _avoid_occupied(self, x: float, y: float) -> Tuple[float, float]:
+        """
+        Размещает буфер/точку ветвления: если координата занята терминалом или уже
+        размещённым узлом, сдвигает на ближайший свободный узел сетки. Если свободного
+        узла рядом нет — это ошибка (две ячейки в одной точке физически невозможны).
+        """
+        pos = (round(x, 6), round(y, 6))
         g = self.grid_size
-        if g <= 0 or (round(x, 6), round(y, 6)) not in self._terminals:
+        if pos not in self._occupied:
+            self._occupied.add(pos)
             return x, y
+        if g <= 0:
+            raise ValueError(
+                f"Нет свободного узла для размещения буфера/точки ветвления: координата "
+                f"({x}, {y}) занята, а шаг сетки не задан — сдвинуть нельзя."
+            )
         max_x = math.floor(self.chip_width / g) * g if self.chip_width is not None else None
         max_y = math.floor(self.chip_height / g) * g if self.chip_height is not None else None
+        best = None
         for r in range(1, 33):
-            best = None
             for dx in range(-r, r + 1):
                 for dy in range(-r, r + 1):
                     if max(abs(dx), abs(dy)) != r:
@@ -300,13 +313,20 @@ class MedianPartitionCTS:
                         continue
                     if max_y is not None and ny > max_y + 1e-9:
                         continue
-                    if (round(nx, 6), round(ny, 6)) in self._terminals:
+                    if (round(nx, 6), round(ny, 6)) in self._occupied:
                         continue
                     if best is None or abs(dx) + abs(dy) < best[0]:
                         best = (abs(dx) + abs(dy), nx, ny)
             if best is not None:
-                return float(best[1]), float(best[2])
-        return x, y
+                break
+        if best is None:
+            raise ValueError(
+                f"Нет свободного узла для размещения буфера/точки ветвления рядом с "
+                f"({x}, {y}): все ближайшие узлы сетки заняты."
+            )
+        bx, by = float(best[1]), float(best[2])
+        self._occupied.add((round(bx, 6), round(by, 6)))
+        return bx, by
 
     # ----------------------------------------------------------------- buffers
     def _assign_buffers(self, root: ClockNode):

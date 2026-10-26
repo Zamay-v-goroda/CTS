@@ -145,9 +145,9 @@ class CTSValidator:
 
     def _check_overlaps(self):
         """
-        Наложение узлов: буфер/точка ветвления не может занимать ту же координату,
-        что терминал (регистр или источник) — это физически недопустимо.
-        Совпадения буферов между собой и терминалов между собой — предупреждения.
+        Совпадение координат узлов — ошибка: каждая ячейка (буфер/точка ветвления)
+        и каждый терминал должны занимать собственный узел сетки. Синтез разводит
+        совпавшие буферы по соседним узлам; оставшиеся совпадения — нарушение.
         """
         by_pos: Dict[Tuple[float, float], List[ClockNode]] = {}
         for n in self._nodes:
@@ -157,23 +157,22 @@ class CTSValidator:
             if len(nodes) < 2:
                 continue
             cell_nodes = [n for n in nodes if n.node_type in ("buffer", "branch")]
-            sink_nodes = [n for n in nodes if n.node_type == "sink"]
-            source_nodes = [n for n in nodes if n.node_type == "source"]
+            terminal_nodes = [n for n in nodes if n.node_type in ("sink", "source")]
 
-            if cell_nodes and (sink_nodes or source_nodes):
+            if cell_nodes and terminal_nodes:
                 self.errors.append(
-                    f"Наложение буфера и терминала в точке ({x}, {y}): "
+                    f"Совпадение координат буфера и терминала в точке ({x}, {y}): "
                     + ", ".join(f"{n.id} ({n.node_type})" for n in nodes) + "."
                 )
-            if len(cell_nodes) > 1:
-                self.warnings.append(
+            elif len(terminal_nodes) > 1:
+                self.errors.append(
+                    f"Совпадение координат терминалов в точке ({x}, {y}): "
+                    + ", ".join(f"{n.id} ({n.node_type})" for n in terminal_nodes) + "."
+                )
+            elif len(cell_nodes) > 1:
+                self.errors.append(
                     f"Совпадение координат буферов/точек ветвления в точке ({x}, {y}): "
                     + ", ".join(n.id for n in cell_nodes) + "."
-                )
-            if len(sink_nodes) > 1:
-                self.warnings.append(
-                    f"Терминалы совпадают по координатам в точке ({x}, {y}): "
-                    + ", ".join(n.id for n in sink_nodes) + "."
                 )
 
     def _check_terminal_grid(self):
