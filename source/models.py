@@ -46,6 +46,7 @@ class WireModel:
     unit_resistance: float
     unit_length: float
     model: str  # "elmore" или "linear"
+    linear_delay_per_um: float = 0.001  # нс/мкм, используется только в линейной модели
 
 @dataclass
 class ClockNode:
@@ -66,7 +67,9 @@ class ClockNode:
     # Электрические характеристики (вычисляются динамически)
     downstream_capacitance: float = 0.0  # Суммарная емкость поддерева ниже узла
     delay_from_source: float = 0.0       # Задержка сигнала от корня до этого узла
-    wire_length_to_parent: float = 0.0   # Длина провода до родительского узла
+    wire_length_to_parent: float = 0.0   # Длина провода до родительского узла (мкм, с учётом змеевика)
+    snake_length: float = 0.0            # Добавочная длина провода (змеевик), мкм
+    buffer_output_load: float = 0.0      # Нагрузка на выходе буфера (фФ)
 
     def add_child(self, child_node: 'ClockNode'):
         """Удобный метод для построения связей в дереве"""

@@ -13,6 +13,10 @@ class CTSVisualizer:
         Строит двумерный график дерева синхронизации и сохраняет его в файл.
         Включает подписи идентификаторов для всех элементов: источников, буферов и терминалов.
         """
+        # ГАРАНТИЯ ОБНОВЛЕНИЯ: Очищаем старые фигуры и оси перед каждым новым построением
+        plt.clf()
+        plt.cla()
+        
         plt.figure(figsize=(10, 10))
         plt.title("Визуализация дерева синхронизации (Clock Tree Topology)", fontsize=14, fontweight='bold')
         
@@ -49,7 +53,7 @@ class CTSVisualizer:
             elif node.node_type == "sink":
                 sinks_x.append(node.x)
                 sinks_y.append(node.y)
-                # ИЗМЕНЕНО: Добавляем подпись для терминалов (мелкий синий шрифт, снизу-слева от маркера)
+                # Добавляем подпись для терминалов (мелкий синий шрифт, снизу-слева от маркера)
                 plt.text(node.x - 3, node.y - 3, node.id, color='darkblue', fontsize=5, 
                          alpha=0.8, ha='right', va='top', zorder=7)
 
@@ -78,7 +82,7 @@ class CTSVisualizer:
         plt.legend(loc='upper right', fontsize=11)
         plt.gca().set_aspect('equal', adjustable='box')
 
-        # Сохранение графика
+        # Сохранение графика (перезаписывает старый файл актуальными данными)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"-> График топологии дерева успешно сохранен по пути: {save_path}")

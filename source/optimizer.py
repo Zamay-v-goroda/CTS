@@ -1,111 +1,274 @@
 import math
-from typing import Dict, Any, Tuple
-from models import ClockNode, WireModel
-from delay_calc import DelayCalculator
+from typing import Dict, Any, Tuple, List, Optional
+from models import ClockNode, WireModel, BufferType
+from delay_calc import DelayCalculator, OHM_FF_TO_NS
+
+_EPS = 1e-12
+
 
 class CTSOptimizer:
     """
-    Модуль постоптимизации дерева синхронизации.
-    Выравнивает задержки ветвей с помощью точного механизма Wire Snaking (модель Элмора).
+    Постоптимизация дерева синхронизации.
+
+    optimization:   objective, secondary_objective, max_iterations, convergence_tol,
+                    skew_target, power_weight, delay_weight
+    tree_params:    snaking_allowed, wire_snaking_limit, buffer_selection
+
+    Целевая функция J строится из метрик, выбранных в objective / secondary_objective:
+      * delay-метрика D: skew (min_skew) или максимальная задержка (min_delay);
+      * мощность P: суммарная переключаемая ёмкость дерева, фФ (min_power).
+    Если выбраны и delay-метрика, и мощность:  J = delay_weight * D/D0 + power_weight * P/P0
+    (D0, P0 — значения до оптимизации). Если выбран один тип метрики — J = эта метрика.
+
+    Ходы оптимизации (принимаются, только если J уменьшилась):
+      1. смена типа буфера (кроме buffer_selection = "uniform");
+      2. змеевик (wire snaking) на быстрых ветвях — только если D = skew.
     """
-    def __init__(self, wire_model: WireModel, opt_params: Dict[str, Any]):
+
+    def __init__(
+        self,
+        wire_model: WireModel,
+        opt_params: Dict[str, Any],
+        tree_params: Optional[Dict[str, Any]] = None,
+        candidate_buffers: Optional[List[BufferType]] = None,
+    ):
+        tree_params = tree_params or {}
         self.wire_model = wire_model
         self.params = opt_params
-        
-        # Извлечение параметров оптимизации
+
         self.objective = opt_params.get("objective", "min_skew")
+        self.secondary = opt_params.get("secondary_objective")
         self.max_iterations = int(opt_params.get("max_iterations", 20))
         self.convergence_tol = float(opt_params.get("convergence_tol", 1e-4))
         self.skew_target = float(opt_params.get("skew_target", 0.05))
-        self.snaking_allowed = opt_params.get("snaking_allowed", True)
-        self.wire_snaking_limit = float(opt_params.get("wire_snaking_limit", 0.2))
+        self.power_weight = float(opt_params.get("power_weight", 0.1))
+        self.delay_weight = float(opt_params.get("delay_weight", 0.9))
 
-        # Инициализируем внутренний калькулятор для оценки изменений на каждой итерации
-        self.delay_calculator = DelayCalculator(wire_model)
+        # snaking_* лежат в tree_params (по заданию)
+        self.snaking_allowed = bool(tree_params.get("snaking_allowed", True))
+        self.snake_limit = float(tree_params.get("wire_snaking_limit", 0.2))
 
+        # Какие метрики входят в J
+        objectives = [o for o in (self.objective, self.secondary) if o]
+        delay_objs = [o for o in objectives if o in ("min_skew", "min_delay")]
+        self.delay_metric: Optional[str] = delay_objs[0] if delay_objs else None  # приоритет у objective
+        self.use_power = "min_power" in objectives
+
+        # Смена буферов запрещена при buffer_selection = uniform
+        if tree_params.get("buffer_selection", "size_by_load") == "uniform":
+            self.candidates: List[BufferType] = []
+        else:
+            self.candidates = sorted(candidate_buffers or [], key=lambda b: (b.drive_strength, b.id))
+
+        self.calc = DelayCalculator(wire_model)
+
+        # Служебное
+        self._nodes: List[ClockNode] = []
+        self._buffer_nodes: List[ClockNode] = []
+        self._ref_d = 1.0
+        self._ref_p = 1.0
+        self.last_delays: Dict[str, float] = {}
+
+        # Статистика для отчёта
+        self.initial: Dict[str, float] = {}
+        self.final: Dict[str, float] = {}
+        self.iterations = 0
+        self.buffers_resized = 0
+        self.edges_snaked = 0
+
+    # ------------------------------------------------------------ metrics/cost
+    def _evaluate(self, root: ClockNode) -> Dict[str, float]:
+        delays, skew = self.calc.calculate(root)
+        self.last_delays = delays
+        values = list(delays.values())
+        return {
+            "max_delay": max(values) if values else 0.0,
+            "min_delay": min(values) if values else 0.0,
+            "skew": skew,
+            "power": self.calc.total_capacitance(root),
+        }
+
+    def _delay_term(self, m: Dict[str, float]) -> float:
+        return m["max_delay"] if self.delay_metric == "min_delay" else m["skew"]
+
+    def _cost(self, m: Dict[str, float]) -> float:
+        d = self._delay_term(m) / self._ref_d if self.delay_metric else 0.0
+        p = m["power"] / self._ref_p if self.use_power else 0.0
+        if self.delay_metric and self.use_power:
+            return self.delay_weight * d + self.power_weight * p
+        return d + p
+
+    def _convergence_value(self, m: Dict[str, float]) -> float:
+        # По заданию — изменение skew; для остальных целей — изменение J
+        return m["skew"] if self.delay_metric == "min_skew" else self._cost(m)
+
+    def _skew_goal_reached(self, m: Dict[str, float]) -> bool:
+        return self.delay_metric == "min_skew" and m["skew"] <= self.skew_target
+
+    # ---------------------------------------------------------------- optimize
     def optimize(self, root: ClockNode) -> Tuple[Dict[str, float], float]:
-        """
-        Основной цикл оптимизации. Итеративно подгоняет задержки быстрых веток.
-        Возвращает итоговые задержки и финальный skew.
-        """
-        # Первичный расчет задержек до оптимизации
-        sink_delays, current_skew = self.delay_calculator.calculate(root)
-        
-        if not sink_delays or current_skew <= self.skew_target or not self.snaking_allowed:
-            return sink_delays, current_skew
+        """Возвращает (задержки sink'ов, итоговый skew)."""
+        m = self._evaluate(root)
+        self.initial = dict(m)
+        self.final = dict(m)
+        if not self.last_delays:
+            return self.last_delays, 0.0
 
-        previous_skew = current_skew
+        self._collect_nodes(root)
+        self._ref_d = m["skew"] if (self.delay_metric == "min_skew" and m["skew"] > _EPS) else (
+            m["max_delay"] if self.delay_metric == "min_delay" and m["max_delay"] > _EPS else 1.0)
+        self._ref_p = m["power"] if m["power"] > _EPS else 1.0
 
-        # Итеративный процесс оптимизации
-        for iteration in range(self.max_iterations):
-            max_delay = max(sink_delays.values())
-            
-            # Обходим дерево и добавляем дополнительную длину проводов на быстрых путях
-            self._apply_snaking_recursive(root, max_delay)
-            
-            # Пересчитываем задержки после изменения длин
-            sink_delays, current_skew = self.delay_calculator.calculate(root)
-            
-            # Проверка условий досрочного выхода
-            if current_skew <= self.skew_target:
+        if self._skew_goal_reached(m):
+            return self.last_delays, m["skew"]
+
+        cost = self._cost(m)
+        for it in range(self.max_iterations):
+            self.iterations = it + 1
+            before = self._convergence_value(m)
+            accepted = False
+
+            # Ход 1: смена типов буферов
+            if self.candidates and self._buffer_nodes:
+                changed = self._resize_pass(root, cost)
+                m = self._evaluate(root)
+                cost = self._cost(m)
+                if changed:
+                    accepted = True
+                    self.buffers_resized += changed
+
+            # Ход 2: змеевик
+            if self.snaking_allowed and self.delay_metric == "min_skew" and m["skew"] > self.skew_target:
+                moved = False
+                for factor in (1.0, 0.5, 0.25):
+                    snap = self._snapshot_snakes()
+                    n = self._snake_pass(root, m["max_delay"], factor)
+                    if n == 0:
+                        break
+                    m2 = self._evaluate(root)
+                    c2 = self._cost(m2)
+                    if c2 < cost - _EPS:
+                        m, cost = m2, c2
+                        accepted = moved = True
+                        self.edges_snaked += n
+                        break
+                    self._restore_snakes(snap)
+                if not moved:
+                    m = self._evaluate(root)   # вернуть расчётные поля узлов в согласованное состояние
+                    cost = self._cost(m)
+
+            if self._skew_goal_reached(m):
                 break
-                
-            if abs(previous_skew - current_skew) < self.convergence_tol:
+            if not accepted:
                 break
-                
-            previous_skew = current_skew
+            if abs(before - self._convergence_value(m)) < self.convergence_tol:
+                break
 
-        return sink_delays, current_skew
+        self.final = dict(m)
+        return self.last_delays, m["skew"]
 
-    def _apply_snaking_recursive(self, node: ClockNode, target_max_delay: float):
+    # ---------------------------------------------------------------- helpers
+    def _collect_nodes(self, root: ClockNode):
+        self._nodes = []
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            self._nodes.append(n)
+            stack.extend(n.children)
+        self._buffer_nodes = [n for n in self._nodes if n.node_type == "buffer" and n.buffer_ref]
+
+    def _snapshot_snakes(self) -> List[float]:
+        return [n.snake_length for n in self._nodes]
+
+    def _restore_snakes(self, snap: List[float]):
+        for n, v in zip(self._nodes, snap):
+            n.snake_length = v
+
+    # ----------------------------------------------------------------- resizing
+    def _resize_pass(self, root: ClockNode, cost: float) -> int:
+        """Жадно перебирает типы буферов у каждого буфера; оставляет лучший по J."""
+        changed = 0
+        for node in self._buffer_nodes:
+            original = node.buffer_ref
+            best_ref, best_cost = original, cost
+            for cand in self.candidates:
+                if cand.id == original.id:
+                    continue
+                node.buffer_ref = cand
+                c = self._cost(self._evaluate(root))
+                if c < best_cost - _EPS:
+                    best_ref, best_cost = cand, c
+            node.buffer_ref = best_ref
+            if best_ref.id != original.id:
+                changed += 1
+                cost = best_cost
+        return changed
+
+    # ------------------------------------------------------------------ snaking
+    def _subtree_max_delay(self, node: ClockNode, out: Dict[int, float]) -> float:
+        if not node.children:
+            out[id(node)] = node.delay_from_source
+        else:
+            out[id(node)] = max(self._subtree_max_delay(ch, out) for ch in node.children)
+        return out[id(node)]
+
+    def _snake_pass(self, root: ClockNode, target: float, factor: float) -> int:
         """
-        Рекурсивный обход дерева для локального удлинения сегментов (Snaking).
-        Учитывает собственную емкость провода и выходное сопротивление родительского драйвера.
+        Сверху вниз удлиняет провода к «быстрым» поддеревьям так, чтобы их самый
+        медленный sink дошёл до target. Накопленный сдвиг задержки предков учитывается.
         """
-        # Извлекаем сопротивление драйвера текущего узла (родителя для дочерних сегментов)
-        # Предполагается, что у BufferType есть поле output_resistance (или drive_resistance)
-        r_driver = 0.0
-        if hasattr(node, 'buffer_ref') and node.buffer_ref:
-            # Пытаемся получить выходное сопротивление буфера
-            r_driver = getattr(node.buffer_ref, 'output_resistance', 0.0)
-        elif node.node_type == "source":
-            # Для корня дерева можно взять внутреннее сопротивление источника тактовой частоты
-            r_driver = getattr(node, 'source_resistance', 0.0)
+        sub: Dict[int, float] = {}
+        self._subtree_max_delay(root, sub)
+        count = 0
 
-        for child in node.children:
-            # Если дочерний узел (или его поддерево) существенно быстрее целевой максимальной задержки
-            if child.delay_from_source < target_max_delay:
-                # Вычисляем дефицит задержки, который нужно компенсировать
-                delay_deficit = target_max_delay - child.delay_from_source
-                
-                # Параметры модели проводов
-                r_unit = self.wire_model.unit_resistance
-                c_unit = self.wire_model.unit_capacitance
-                c_load = child.downstream_capacitance
-                
-                # ИЗМЕНЕНО: Решаем полное квадратное уравнение задержки Элмора:
-                # a * L_add^2 + b * L_add + c = 0
-                a = 0.5 * r_unit * c_unit
-                b = (r_unit * c_load) + (r_driver * c_unit)
-                c = -delay_deficit
-                
-                # Дискриминант (всегда положителен, так как a > 0 и c < 0)
-                discriminant = b**2 - 4 * a * c
-                
-                if a > 0:
-                    # Берем единственный положительный корень квадратного уравнения
-                    additional_length = (-b + math.sqrt(discriminant)) / (2 * a)
-                else:
-                    # На случай, если параметры провода нулевые (защита от деления на 0)
-                    additional_length = delay_deficit / b if b > 0 else 0.0
-                
-                # Защита: ограничиваем максимальное удлинение лимитом из конфигурации
-                max_allowed_extension = child.wire_length_to_parent * self.wire_snaking_limit
-                if additional_length > max_allowed_extension:
-                    additional_length = max_allowed_extension
-                
-                # Увеличиваем физическую длину провода (эффект "змеевика")
-                child.wire_length_to_parent += additional_length
+        def visit(node: ClockNode, shift: float):
+            nonlocal count
+            if node.node_type == "buffer" and node.buffer_ref:
+                r_drv = node.buffer_ref.output_resistance
+            else:
+                r_drv = 0.0
+            for child in node.children:
+                deficit = (target - (sub[id(child)] + shift)) * factor
+                new_shift = shift
+                if deficit > 1e-9:
+                    gained = self._extend_edge(child, r_drv, deficit)
+                    if gained > 0.0:
+                        count += 1
+                        new_shift += gained
+                visit(child, new_shift)
 
-            # Спускаемся глубже по дереву
-            self._apply_snaking_recursive(child, target_max_delay)
+        visit(root, 0.0)
+        return count
+
+    def _extend_edge(self, child: ClockNode, r_driver: float, deficit: float) -> float:
+        """
+        Удлиняет провод к child, чтобы добавить ~deficit нс. Возвращает фактически добавленную задержку.
+        Elmore: a*dL^2 + b*dL = deficit, a = K*r*c/2, b = K*(r*(c*L + C_load) + R_drv*c).
+        """
+        length = child.wire_length_to_parent
+        geometric = length - child.snake_length
+        room = self.snake_limit * geometric - child.snake_length   # wire_snaking_limit — доля от длины
+        if room <= 1e-9:
+            return 0.0
+
+        r = self.wire_model.unit_resistance
+        c = self.wire_model.unit_capacitance
+        c_load = child.downstream_capacitance
+        if self.wire_model.model.lower() == "elmore":
+            a = 0.5 * r * c * OHM_FF_TO_NS
+            b = OHM_FF_TO_NS * (r * (c * length + c_load) + r_driver * c)
+        else:
+            a = 0.0
+            b = self.wire_model.linear_delay_per_um + OHM_FF_TO_NS * r_driver * c
+
+        if a > 0.0:
+            d_len = (-b + math.sqrt(b * b + 4.0 * a * deficit)) / (2.0 * a)
+        elif b > 0.0:
+            d_len = deficit / b
+        else:
+            return 0.0
+
+        d_len = min(d_len, room)
+        child.snake_length += d_len
+        child.wire_length_to_parent += d_len
+        return a * d_len * d_len + b * d_len
