@@ -22,7 +22,9 @@ class CTSOptimizer:
 
     Ходы оптимизации (принимаются, только если J уменьшилась):
       1. смена типа буфера (кроме buffer_selection = "uniform");
-      2. змеевик (wire snaking) на быстрых ветвях — только если D = skew.
+      2. змеевик (wire snaking) на быстрых ветвях — если min_skew входит в цели
+         (objective или secondary): при основной цели skew — по снижению J,
+         при вторичной — по снижению skew без ухудшения max_delay.
     """
 
     def __init__(
@@ -53,6 +55,9 @@ class CTSOptimizer:
         delay_objs = [o for o in objectives if o in ("min_skew", "min_delay")]
         self.delay_metric: Optional[str] = delay_objs[0] if delay_objs else None  # приоритет у objective
         self.use_power = "min_power" in objectives
+        # min_skew может быть и основной, и вторичной целью: если он указан в любой
+        # из целей, оптимизатор дополнительно целится в skew_target (см. _accept_snake).
+        self.skew_is_goal = "min_skew" in objectives
 
         # Смена буферов запрещена при buffer_selection = uniform
         if tree_params.get("buffer_selection", "size_by_load") == "uniform":
@@ -105,6 +110,18 @@ class CTSOptimizer:
     def _skew_goal_reached(self, m: Dict[str, float]) -> bool:
         return self.delay_metric == "min_skew" and m["skew"] <= self.skew_target
 
+    def _accept_snake(self, m: Dict[str, float], m2: Dict[str, float],
+                      cost: float, c2: float) -> bool:
+        """Принимает удлинение проводов.
+        Если skew — основная delay-метрика, судим по снижению J.
+        Если skew — вторичная цель, принимаем, когда выигрыш по skew больше проигрыша
+        по основной задержке (max_delay): так приоритет objective в J сохраняется."""
+        if self.delay_metric == "min_skew":
+            return c2 < cost - _EPS
+        d_skew = m["skew"] - m2["skew"]
+        d_delay = m2["max_delay"] - m["max_delay"]
+        return d_skew > _EPS and d_delay <= d_skew
+
     # ---------------------------------------------------------------- optimize
     def optimize(self, root: ClockNode) -> Tuple[Dict[str, float], float]:
         """Возвращает (задержки sink'ов, итоговый skew)."""
@@ -137,8 +154,8 @@ class CTSOptimizer:
                     accepted = True
                     self.buffers_resized += changed
 
-            # Ход 2: змеевик
-            if self.snaking_allowed and self.delay_metric == "min_skew" and m["skew"] > self.skew_target:
+            # Ход 2: змеевик — если skew входит в цели оптимизации и не достигнут
+            if self.snaking_allowed and self.skew_is_goal and m["skew"] > self.skew_target:
                 moved = False
                 for factor in (1.0, 0.5, 0.25):
                     snap = self._snapshot_snakes()
@@ -147,7 +164,7 @@ class CTSOptimizer:
                         break
                     m2 = self._evaluate(root)
                     c2 = self._cost(m2)
-                    if c2 < cost - _EPS:
+                    if self._accept_snake(m, m2, cost, c2):
                         m, cost = m2, c2
                         accepted = moved = True
                         self.edges_snaked += n

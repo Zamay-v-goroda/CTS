@@ -224,7 +224,8 @@ class CTSParser:
                     raise ValueError(f"buffers[{i}].{key}: обязательный параметр отсутствует.")
             buf = BufferType(
                 id=str(bd["id"]),
-                type=str(bd["type"]),
+                # По ТЗ type — категория буфера: standard / mid / large.
+                type=self._choice(f"buffers[{i}]", bd, "type", "", ("standard", "mid", "large")),
                 input_capacitance=self._number(f"buffers[{i}]", bd, "input_capacitance", minimum=0),
                 output_resistance=self._number(f"buffers[{i}]", bd, "output_resistance", minimum=0),
                 intrinsic_delay=self._number(f"buffers[{i}]", bd, "intrinsic_delay", minimum=0),
