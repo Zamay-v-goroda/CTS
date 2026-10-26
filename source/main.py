@@ -35,7 +35,6 @@ def print_divider():
 
 
 def sanitize_name(name: str) -> str:
-    """Оставляет в имени только безопасные символы (защита от path traversal)."""
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name or "")
 
 
@@ -167,7 +166,6 @@ def main():
     execution_time = time.time() - start_time
     print(f"-> Время работы алгоритма (без построения графика): {execution_time:.4f} сек.")
     
-    # ПЕРЕНЕСЕНО НАВЕРХ: Отрисовка полученной топологии выполняется ДО блокировки.
     # Это гарантирует обновление .png файлов при каждом запуске пайплайна для визуального дебага.
     print("[6/6] Генерация графического отчета...")
     try:
@@ -187,8 +185,7 @@ def main():
         print_divider()
         log.finish(1)  # Завершаем работу с ошибкой после отрисовки графика
 
-    # Целевой разброс не достигнут: это предупреждение, а не блокировка отчёта.
-    # Проверка применяется, если skew входит в цели оптимизации.
+    # Целевой разброс не достигнут: предупреждение
     skew_is_goal = "min_skew" in (opt_params["objective"], opt_params["secondary_objective"])
     skew_target_met = (not skew_is_goal) or (final_skew <= opt_params["skew_target"] + 1e-12)
     if skew_is_goal and not skew_target_met:

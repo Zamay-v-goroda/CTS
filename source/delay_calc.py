@@ -7,7 +7,7 @@ OHM_FF_TO_NS = 1e-6
 
 
 def get_manhattan_dist(n1: ClockNode, n2: ClockNode) -> float:
-    """Вычисляет Манхэттенское расстояние между узлами (физическая трассировка)"""
+    """Вычисляет Манхэттенское расстояние между узлами """
     return abs(n1.x - n2.x) + abs(n1.y - n2.y)
 
 
@@ -15,7 +15,6 @@ class DelayCalculator:
     """
     Расчёт временных характеристик дерева синхронизации.
     Длина -> мкм, сопротивление -> Ом, ёмкость -> фФ, задержка -> нс.
-    Поддерживаются модели "elmore" и "linear" (wire_model.model).
     """
 
     def __init__(self, wire_model: WireModel):
