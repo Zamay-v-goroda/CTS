@@ -10,6 +10,11 @@ from optimizer import CTSOptimizer
 from validator import CTSValidator
 from visualizer import CTSVisualizer
 
+# ANSI-цвет для вывода ошибок
+RED = "\033[91m"
+RESET = "\033[0m"
+
+
 class RunLog:
     """Собирает ошибки и предупреждения запуска и сохраняет их в файл."""
     def __init__(self, path):
@@ -86,7 +91,7 @@ def main():
     update_latest_link(args.output_dir, run_dir)
     print(f"-> Папка прогона: {run_dir}")
     if not os.path.exists(input_file):
-        print(f"[Ошибка] Пожалуйста, положите входной JSON-файл по пути: {input_file}")
+        print(f"{RED}[Ошибка] Пожалуйста, положите входной JSON-файл по пути: {input_file}{RESET}")
         log.add("ОШИБКА", f"Входной файл не найден: {input_file}")
         log.finish(1)
         
@@ -108,7 +113,7 @@ def main():
             print(f"-> [Замечание] {w}")
             log.add("ПРЕДУПРЕЖДЕНИЕ", w)
     except Exception as e:
-        print(f"[КРИТИЧЕСКАЯ ОШИБКА ВАЛИДАЦИИ JSON]: {e}")
+        print(f"{RED}[КРИТИЧЕСКАЯ ОШИБКА ВАЛИДАЦИИ JSON]: {e}{RESET}")
         log.add("ОШИБКА", f"Валидация JSON: {e}")
         log.finish(1)
         
@@ -123,7 +128,7 @@ def main():
         )
         root_node = cts_engine.build_tree()
     except ValueError as e:
-        print(f"[КРИТИЧЕСКАЯ ОШИБКА СИНТЕЗА]: {e}")
+        print(f"{RED}[КРИТИЧЕСКАЯ ОШИБКА СИНТЕЗА]: {e}{RESET}")
         log.add("ОШИБКА", f"Синтез: {e}")
         log.finish(1)
     print("-> Топология дерева успешно построена.")
@@ -165,7 +170,20 @@ def main():
     # Время работы алгоритма фиксируется ДО построения графика (отрисовка в него не входит)
     execution_time = time.time() - start_time
     print(f"-> Время работы алгоритма (без построения графика): {execution_time:.4f} сек.")
-    
+
+    # Проверка строгого запрета на запись текстовых отчетов при ошибках.
+    # Алгоритм останавливается сразу: ни отчёт, ни график не сохраняются.
+    if not is_valid:
+        print_divider()
+        print(f"{RED}-> [КРИТИЧЕСКАЯ ОШИБКА] Дерево синхронизации НАРУШИЛО ТРЕБОВАНИЯ ТЗ! "
+              f"({len(errors)} ошибок){RESET}")
+        for err in errors:
+            print(f"{RED}   ! {err}{RESET}")
+        print(f"\n{RED}[БЛОКИРОВКА] Запись отчёта и построение графика отменены. "
+              f"Алгоритм остановлен.{RESET}")
+        print_divider()
+        log.finish(1)  # Завершаем работу с ошибкой
+
     # Это гарантирует обновление .png файлов при каждом запуске пайплайна для визуального дебага.
     print("[6/6] Генерация графического отчета...")
     try:
@@ -174,17 +192,6 @@ def main():
     except Exception as e:
         print(f"-> [Предупреждение] Не удалось построить график: {e}")
             
-    # Проверка строгого запрета на запись текстовых отчетов при ошибках
-    if not is_valid:
-        print_divider()
-        print(f"-> [КРИТИЧЕСКАЯ ОШИБКА] Дерево синхронизации НАГЛЯДНО НАРУШИЛО ТРЕБОВАНИЯ ТЗ! ({len(errors)} ошибок)")
-        for err in errors:
-            print(f"   ! {err}")
-        print("\n[БЛОКИРОВКА] Запись текстового отчета отменена ради целостности данных проекта.")
-        print("-> [ВНИМАНИЕ] График топологии сохранен для анализа геометрии ошибок.")
-        print_divider()
-        log.finish(1)  # Завершаем работу с ошибкой после отрисовки графика
-
     # Целевой разброс не достигнут: предупреждение
     skew_is_goal = "min_skew" in (opt_params["objective"], opt_params["secondary_objective"])
     skew_target_met = (not skew_is_goal) or (final_skew <= opt_params["skew_target"] + 1e-12)
